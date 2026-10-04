@@ -49,3 +49,42 @@ jobs:
               repo: context.repo.repo,
               body: `${status} **PR Check** — ${{ job.status }}\nCommit: \`${{ github.sha }}\``
             });
+
+  helm-validation:
+    name: Validar y Renderizar Helm Chart (Render First)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Instalar Helm CLI
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.13.0'
+
+      - name: Validar estructura y metadata del Chart (Helm Lint)
+        run: |
+          helm lint devops-tp12/chart/
+
+      # -------------------------------------------------------------
+      # PASO CLAVE TP10B: Renderizado previo de plantillas
+      # -------------------------------------------------------------
+      - name: Renderizar Plantillas Go a YAML puro de Kubernetes
+        run: |
+          helm template mi-app devops-tp12/chart -f devops-tp12/values-local.yaml > manifests-rendered.yaml
+
+      - name: Validar Sintaxis YAML del Manifiesto Renderizado
+        run: |
+          python3 -c "
+          import yaml
+          with open('manifests-rendered.yaml') as f:
+              docs = list(yaml.safe_load_all(f))
+              print(f'[OK] Se procesaron correctamente {len(docs)} objetos de K8s.')
+          "
+
+      - name: Publicar Artefacto con los Manifiestos Renderizados
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifiestos-k8s-renderizados
+          path: manifests-rendered.yaml
+          retention-days: 7
