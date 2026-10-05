@@ -1,15 +1,14 @@
 # ============================================
-# cicd.yml — Pipeline completo CI/CD
-# TP07 — Plan DevOps
+# cicd.yml — Pipeline completo CI/CD con Trivy Security (3 Fases)
 # ============================================
 
-name: CI/CD Pipeline
+name: CI/CD Pipeline - Notes App con Trivy Security (3 Fases)
 
-# ── Triggers ──────────────────────────────────────────────
+# ── Triggers unificados ───────────────────────────────────
 on:
   push:
     branches:
-      - main          # pipeline completo
+      - main          # pipeline completo con deploy
       - develop       # solo CI (sin deploy)
       - 'feature/**'  # solo lint + test
   pull_request:
@@ -17,10 +16,12 @@ on:
       - main
       - develop
 
-# ── Variables globales ────────────────────────────────────
+# ── Variables globales unificadas ─────────────────────────
 env:
   DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/devops-portfolio
   PYTHON_VERSION: "3.12"
+  HELM_RELEASE_NAME: mi-app
+  K8S_NAMESPACE: devops-portfolio
 
 # ── Jobs ──────────────────────────────────────────────────
 jobs:
@@ -93,8 +94,6 @@ jobs:
           retention-days: 7
 
   # ── Job 3: Test de la app integrada (devops-tp12) ──────
-  # Prueba el código integrado que despliega devops-tp12/scripts/deploy.sh.
-  # Las imágenes se construyen para validarlas, pero no se publican.
   test-integrated-app:
     name: Test App Integrada (devops-tp12)
     runs-on: ubuntu-latest
@@ -118,7 +117,7 @@ jobs:
             --max-line-length=100 \
             --extend-ignore=E302,E701,E702,W391
 
-      - name: Tests con cobertura (backend integrado, incluye regresión de nota sin título)
+      - name: Tests con cobertura (backend integrado)
         run: |
           cd devops-tp12/app/backend
           pytest tests/ --cov=. --cov-report=term-missing -v
@@ -128,84 +127,11 @@ jobs:
           docker build -t notes-backend:ci-check devops-tp12/app/backend
           docker build -t notes-frontend:ci-check devops-tp12/app/frontend
 
-  # ── Job 4: Build y Push ────────────────────────────────
-  # Conserva la publicación del backend heredado en main y develop.
-  build-push:
-    name: Build y Push imagen
-    runs-on: ubuntu-latest
-    needs: test
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
-
-    outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
-      image-digest: ${{ steps.build.outputs.digest }}
-
-    steps:
-      - name: Checkout código
-        uses: actions/checkout@v4
-
-      # Genera tags automáticos: latest, sha-abc123, v1.0 si hay tag
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKER_IMAGE }}
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-,format=short
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-
-      - name: Login a Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # buildx permite builds multi-plataforma (linux/amd64 + linux/arm64)
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build y Push
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: ./devops-TP06/backend
-          target: final
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Cache entre runs para builds más rápidos
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Resumen del build
-        run: |
-          {
-            echo "### Imagen publicada"
-            echo "Tags: ${{ steps.meta.outputs.tags }}"
-            echo "Digest: ${{ steps.build.outputs.digest }}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-name: CI/CD Pipeline - Notes App con Trivy Security (3 Fases & TP10B)
-
-on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
-
-env:
-  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/devops-portfolio
-  HELM_RELEASE_NAME: mi-app
-  K8S_NAMESPACE: devops-portfolio
-
-jobs:
-  # =========================================================================
-  # FASE 1: BUILD & PACKAGE (Construcción Única y Exportación de Artefacto)
-  # =========================================================================
+  # ── FASE 1: BUILD & PACKAGE ─────────────────────────────
   build-and-package:
     name: "Fase 1: Build & Package (Imagen Inmutable)"
     runs-on: ubuntu-latest
+    needs: [test]
     steps:
       - name: Checkout del código
         uses: actions/checkout@v4
@@ -215,7 +141,7 @@ jobs:
 
       - name: Compilar imagen Docker
         run: |
-          docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ./backend
+          docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ./devops-tp12/app/backend
 
       - name: Exportar imagen a tarball efímero
         run: |
@@ -229,9 +155,7 @@ jobs:
           path: build-artifacts/app-image.tar
           retention-days: 1
 
-  # =========================================================================
-  # FASE 2A: AUDITORÍA DE SEGURIDAD - ANDON CORD (HIGH/CRITICAL)
-  # =========================================================================
+  # ── FASE 2A: AUDITORÍA DE SEGURIDAD - ANDON CORD ────────
   trivy-andon-cord:
     name: "Fase 2A: Trivy - Andon Cord (HIGH/CRITICAL)"
     runs-on: ubuntu-latest
@@ -255,27 +179,25 @@ jobs:
         with:
           version: 'v3.13.0'
 
-      # -------------------------------------------------------------
-      # APLICACIÓN PATRÓN TP10B: Renderizado previo de Helm
-      # -------------------------------------------------------------
-      - name: Renderizar Helm Chart (TP10B - Sin Falsos Positivos)
+      - name: Renderizar Helm Chart (TP10B)
         run: |
-          helm template ${{ env.HELM_RELEASE_NAME }} ./devops-portfolio -f devops-portfolio/values-prod.yaml > manifests-rendered-prod.yaml
+          cd devops-tp12
+          helm template ${{ env.HELM_RELEASE_NAME }} ./chart -f values-local.yaml > manifests-rendered-prod.yaml
 
       - name: Escaneo de Contenedor & SCA (Andon Cord)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: '${{ env.DOCKER_IMAGE }}:${{ github.sha }}'
           format: 'table'
-          exit-code: '1'          # Detiene el pipeline si hay hallazgos
-          ignore-unfixed: true   # Filtra CVEs con solución disponible
+          exit-code: '1'
+          ignore-unfixed: true
           severity: 'HIGH,CRITICAL'
 
       - name: Escaneo de IaC sobre YAML Renderizado (Trivy Config)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'config'
-          scan-ref: 'manifests-rendered-prod.yaml'
+          scan-ref: 'devops-tp12/manifests-rendered-prod.yaml'
           format: 'table'
           exit-code: '1'
           severity: 'HIGH,CRITICAL'
@@ -286,11 +208,9 @@ jobs:
           echo "### Auditoría Bloqueante de Seguridad (Andon Cord) :shield:" >> $GITHUB_STEP_SUMMARY
           echo "| Evaluación | Severidades | Política de Control |" >> $GITHUB_STEP_SUMMARY
           echo "|------------|-------------|---------------------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Contenedor, SCA e IaC Renderizado** | \`HIGH, CRITICAL\` |  **Andon Cord Activo** (Bloquea si hay CVEs) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Contenedor, SCA e IaC Renderizado** | \`HIGH, CRITICAL\` | **Andon Cord Activo** (Bloquea si hay CVEs) |" >> $GITHUB_STEP_SUMMARY
 
-  # =========================================================================
-  # FASE 2B: AUDITORÍA DE SEGURIDAD - REPORTE INFORMATIVO (LOW/MEDIUM)
-  # =========================================================================
+  # ── FASE 2B: AUDITORÍA INFORMATIVA (LOW/MEDIUM) ─────────
   trivy-audit-report:
     name: "Fase 2B: Trivy - Reporte e Inspección (LOW/MEDIUM)"
     runs-on: ubuntu-latest
@@ -315,9 +235,9 @@ jobs:
         with:
           image-ref: '${{ env.DOCKER_IMAGE }}:${{ github.sha }}'
           format: 'table'
-          exit-code: '0'          # Permite continuar el flujo
+          exit-code: '0'
           severity: 'LOW,MEDIUM'
-        output: 'trivy-low-medium-report.txt'
+          output: 'trivy-low-medium-report.txt'
 
       - name: Publicar Artifact de Vulnerabilidades Menores
         uses: actions/upload-artifact@v4
@@ -334,9 +254,7 @@ jobs:
           head -n 35 trivy-low-medium-report.txt || echo "No se registraron vulnerabilidades menores." >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
-  # =========================================================================
-  # FASE 3: RELEASE & DEPLOY (Publicación y Despliegue Post-Aprobación)
-  # =========================================================================
+  # ── FASE 3: RELEASE & DEPLOY ────────────────────────────
   deploy-k8s-helm:
     name: "Fase 3: Release & Deploy Helm K8s"
     runs-on: ubuntu-latest
@@ -364,11 +282,10 @@ jobs:
 
       - name: Etiquetar y Push a Docker Hub
         run: |
-          docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ${{ env.DOCKER_IMAGE }}:latest
+          docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }}${{ env.DOCKER_IMAGE }}:latest
           docker push ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
           docker push ${{ env.DOCKER_IMAGE }}:latest
 
       - name: Despliegue con Helm en Kubernetes
         run: |
           echo "Desplegando Helm Chart '${{ env.HELM_RELEASE_NAME }}' en namespace '${{ env.K8S_NAMESPACE }}'..."
-          # helm upgrade --install ${{ env.HELM_RELEASE_NAME }} ./devops-portfolio -n ${{ env.K8S_NAMESPACE }}
