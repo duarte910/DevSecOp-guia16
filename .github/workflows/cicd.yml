@@ -208,7 +208,7 @@ jobs:
           echo "### Auditoría Bloqueante de Seguridad (Andon Cord) :shield:" >> $GITHUB_STEP_SUMMARY
           echo "| Evaluación | Severidades | Política de Control |" >> $GITHUB_STEP_SUMMARY
           echo "|------------|-------------|---------------------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Contenedor, SCA e IaC Renderizado** | \`HIGH, CRITICAL\` | **Andon Cord Activo** (Bloquea si hay CVEs) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Contenedor, SCA e IaC** | \`HIGH, CRITICAL\` | **Andon Cord Activo** |" >> $GITHUB_STEP_SUMMARY
 
   # ── FASE 2B: AUDITORÍA INFORMATIVA (LOW/MEDIUM) ─────────
   trivy-audit-report:
@@ -249,9 +249,9 @@ jobs:
       - name: Publicar Resumen en $GITHUB_STEP_SUMMARY
         run: |
           echo "### Reporte de Vulnerabilidades Informativas (LOW/MEDIUM) :clipboard:" >> $GITHUB_STEP_SUMMARY
-          echo "El reporte completo ha sido adjuntado como **Artifact** descargable en este workflow." >> $GITHUB_STEP_SUMMARY
+          echo "Reporte completo adjuntado como **Artifact** descargable en este workflow." >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`text" >> $GITHUB_STEP_SUMMARY
-          head -n 35 trivy-low-medium-report.txt || echo "No se registraron vulnerabilidades menores." >> $GITHUB_STEP_SUMMARY
+          head -n 35 trivy-low-medium-report.txt || echo "Sin vulnerabilidades menores." >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
   # ── FASE 3: RELEASE & DEPLOY ────────────────────────────
