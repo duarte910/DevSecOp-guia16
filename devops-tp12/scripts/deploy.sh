@@ -31,32 +31,33 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --wait --timeout 5m
 
 # ── Chart de la app (TP10): postgres + backend + frontend + Ingress ──
-# Sin --create-namespace: el chart ya define su propio namespace.yaml
-# (ver README.md, sección "Notas").
 helm upgrade --install mi-app "${PROJECT_DIR}/chart" \
   -f "${PROJECT_DIR}/values-local.yaml" \
   --wait --timeout 5m
 
-# El tag local no cambia entre ejecuciones. Se reinician ambos Deployments
-# para que los Pods carguen las imágenes recién importadas.
 kubectl rollout restart deployment/backend deployment/frontend -n "${NAMESPACE}"
 
 # ── Certificado TLS del Ingress ───────────────────────────
-# El chart ya creó el namespace; el script valida el par y aplica el Secret.
 "${PROJECT_DIR}/scripts/generate-tls-cert.sh"
 
 kubectl rollout status deployment/backend -n "${NAMESPACE}" --timeout=180s
 kubectl rollout status deployment/frontend -n "${NAMESPACE}" --timeout=180s
 
 # ── Monitoreo (TP08): Prometheus/Grafana/NodeExporter/cAdvisor ───
-# Todo en el namespace devops-portfolio, con RBAC propio (ServiceAccount +
-# ClusterRole + ClusterRoleBinding) para que Prometheus descubra al backend
-# por label (kubernetes_sd_configs), no por hostname fijo.
 kubectl apply -f "${PROJECT_DIR}/monitoring-k8s-manifests.yaml"
 kubectl rollout status deployment/prometheus -n "${NAMESPACE}" --timeout=120s
 kubectl rollout status deployment/grafana -n "${NAMESPACE}" --timeout=120s
 kubectl rollout status daemonset/node-exporter -n "${NAMESPACE}" --timeout=120s
 kubectl rollout status daemonset/cadvisor -n "${NAMESPACE}" --timeout=120s
+
+# ── TP16: Alertas de Seguridad en Prometheus (Paso 1 y 2) ───
+echo "Inyectando reglas de alerta de seguridad en Prometheus..."
+kubectl create configmap prometheus-rules \
+  --from-file=alerts.yml="${PROJECT_DIR}/prometheus-alerts-security.yml" \
+  -n "${NAMESPACE}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl exec -it deployment/prometheus -n "${NAMESPACE}" -- curl -s -X POST http://localhost:9090/-/reload > /dev/null
 
 echo
 echo "=== Pods ==="

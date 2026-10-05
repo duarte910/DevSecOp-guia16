@@ -185,3 +185,190 @@ jobs:
             echo "Tags: ${{ steps.meta.outputs.tags }}"
             echo "Digest: ${{ steps.build.outputs.digest }}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+name: CI/CD Pipeline - Notes App con Trivy Security (3 Fases & TP10B)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/devops-portfolio
+  HELM_RELEASE_NAME: mi-app
+  K8S_NAMESPACE: devops-portfolio
+
+jobs:
+  # =========================================================================
+  # FASE 1: BUILD & PACKAGE (Construcción Única y Exportación de Artefacto)
+  # =========================================================================
+  build-and-package:
+    name: "Fase 1: Build & Package (Imagen Inmutable)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compilar imagen Docker
+        run: |
+          docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ./backend
+
+      - name: Exportar imagen a tarball efímero
+        run: |
+          mkdir -p build-artifacts
+          docker save ${{ env.DOCKER_IMAGE }}:${{ github.sha }} -o build-artifacts/app-image.tar
+
+      - name: Publicar Artefacto de Imagen
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-artifact
+          path: build-artifacts/app-image.tar
+          retention-days: 1
+
+  # =========================================================================
+  # FASE 2A: AUDITORÍA DE SEGURIDAD - ANDON CORD (HIGH/CRITICAL)
+  # =========================================================================
+  trivy-andon-cord:
+    name: "Fase 2A: Trivy - Andon Cord (HIGH/CRITICAL)"
+    runs-on: ubuntu-latest
+    needs: [build-and-package]
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Descargar Artefacto de Imagen
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-artifact
+          path: build-artifacts
+
+      - name: Cargar imagen Docker compilada
+        run: |
+          docker load -i build-artifacts/app-image.tar
+
+      - name: Instalar Helm CLI
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.13.0'
+
+      # -------------------------------------------------------------
+      # APLICACIÓN PATRÓN TP10B: Renderizado previo de Helm
+      # -------------------------------------------------------------
+      - name: Renderizar Helm Chart (TP10B - Sin Falsos Positivos)
+        run: |
+          helm template ${{ env.HELM_RELEASE_NAME }} ./devops-portfolio -f devops-portfolio/values-prod.yaml > manifests-rendered-prod.yaml
+
+      - name: Escaneo de Contenedor & SCA (Andon Cord)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.DOCKER_IMAGE }}:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'          # Detiene el pipeline si hay hallazgos
+          ignore-unfixed: true   # Filtra CVEs con solución disponible
+          severity: 'HIGH,CRITICAL'
+
+      - name: Escaneo de IaC sobre YAML Renderizado (Trivy Config)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'manifests-rendered-prod.yaml'
+          format: 'table'
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+
+      - name: Resumen de Andon Cord en GitHub
+        if: always()
+        run: |
+          echo "### Auditoría Bloqueante de Seguridad (Andon Cord) :shield:" >> $GITHUB_STEP_SUMMARY
+          echo "| Evaluación | Severidades | Política de Control |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|-------------|---------------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Contenedor, SCA e IaC Renderizado** | \`HIGH, CRITICAL\` |  **Andon Cord Activo** (Bloquea si hay CVEs) |" >> $GITHUB_STEP_SUMMARY
+
+  # =========================================================================
+  # FASE 2B: AUDITORÍA DE SEGURIDAD - REPORTE INFORMATIVO (LOW/MEDIUM)
+  # =========================================================================
+  trivy-audit-report:
+    name: "Fase 2B: Trivy - Reporte e Inspección (LOW/MEDIUM)"
+    runs-on: ubuntu-latest
+    needs: [build-and-package, trivy-andon-cord]
+    if: always()
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Descargar Artefacto de Imagen
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-artifact
+          path: build-artifacts
+
+      - name: Cargar imagen Docker compilada
+        run: |
+          docker load -i build-artifacts/app-image.tar
+
+      - name: Escaneo de Seguridad - Reporte Informativo
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.DOCKER_IMAGE }}:${{ github.sha }}'
+          format: 'table'
+          exit-code: '0'          # Permite continuar el flujo
+          severity: 'LOW,MEDIUM'
+        output: 'trivy-low-medium-report.txt'
+
+      - name: Publicar Artifact de Vulnerabilidades Menores
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-vulnerabilidades-trivy-low-medium
+          path: trivy-low-medium-report.txt
+          retention-days: 14
+
+      - name: Publicar Resumen en $GITHUB_STEP_SUMMARY
+        run: |
+          echo "### Reporte de Vulnerabilidades Informativas (LOW/MEDIUM) :clipboard:" >> $GITHUB_STEP_SUMMARY
+          echo "El reporte completo ha sido adjuntado como **Artifact** descargable en este workflow." >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`text" >> $GITHUB_STEP_SUMMARY
+          head -n 35 trivy-low-medium-report.txt || echo "No se registraron vulnerabilidades menores." >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  # =========================================================================
+  # FASE 3: RELEASE & DEPLOY (Publicación y Despliegue Post-Aprobación)
+  # =========================================================================
+  deploy-k8s-helm:
+    name: "Fase 3: Release & Deploy Helm K8s"
+    runs-on: ubuntu-latest
+    needs: [build-and-package, trivy-andon-cord, trivy-audit-report]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Descargar Artefacto de Imagen
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-artifact
+          path: build-artifacts
+
+      - name: Cargar imagen Docker probada
+        run: |
+          docker load -i build-artifacts/app-image.tar
+
+      - name: Login a Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Etiquetar y Push a Docker Hub
+        run: |
+          docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ${{ env.DOCKER_IMAGE }}:latest
+          docker push ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          docker push ${{ env.DOCKER_IMAGE }}:latest
+
+      - name: Despliegue con Helm en Kubernetes
+        run: |
+          echo "Desplegando Helm Chart '${{ env.HELM_RELEASE_NAME }}' en namespace '${{ env.K8S_NAMESPACE }}'..."
+          # helm upgrade --install ${{ env.HELM_RELEASE_NAME }} ./devops-portfolio -n ${{ env.K8S_NAMESPACE }}

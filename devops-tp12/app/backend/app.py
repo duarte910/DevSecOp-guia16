@@ -95,7 +95,7 @@ def update_notes_gauge():
     except Exception:
         DB_ERRORS.inc()
 
-# ── Endpoints ─────────────────────────────────────────────
+# ── Endpoints Originales ──────────────────────────────────
 @app.route('/metrics')
 def metrics():
     update_notes_gauge()
@@ -114,7 +114,7 @@ def health():
         'status': 'ok',
         'uptime_seconds': uptime,
         'db': db_status,
-        'time': datetime.datetime.now(datetime.UTC).isoformat()
+        'time': datetime.datetime.now(datetime.timezone.utc).isoformat()
     })
 
 @app.route('/api/notes', methods=['GET'])
@@ -153,6 +153,19 @@ def delete_note(note_id):
     conn.commit()
     cur.close(); conn.close()
     return jsonify({'message': 'nota eliminada'})
+
+# ── Endpoints bajo /api/ para que el Ingress los mande al Backend (TP16) ──
+@app.route('/api/v1/login', methods=['POST'])
+def sim_login():
+    return jsonify({'error': 'Unauthorized'}), 401
+
+@app.route('/api/admin', methods=['GET'])
+def sim_admin():
+    return jsonify({'error': 'Forbidden'}), 403
+
+@app.route('/api/error', methods=['GET'])
+def sim_error():
+    return jsonify({'error': 'Internal Server Error'}), 500
 
 
 if __name__ == '__main__':
