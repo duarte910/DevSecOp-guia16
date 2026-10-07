@@ -282,7 +282,7 @@ jobs:
 
       - name: Etiquetar y Push a Docker Hub
         run: |
-          docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }}${{ env.DOCKER_IMAGE }}:latest
+          docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ${{ env.DOCKER_IMAGE }}:latest
           docker push ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
           docker push ${{ env.DOCKER_IMAGE }}:latest
 
